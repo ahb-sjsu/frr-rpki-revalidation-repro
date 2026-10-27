@@ -8,7 +8,7 @@ Valid stay denied. `clear bgp ... soft in` corrects both at once.
 
 Seen with FRR 8.4.4 (Ubuntu 24.04 package) and FRR 10.7.1 (frr-stable from
 deb.frrouting.org), both with librtr 0.8.0, StayRTR 0.5.1 as the cache and
-ExaBGP 4.2.21 as the eBGP peer. FRR issue: <ISSUE LINK>.
+ExaBGP 4.2.21 as the eBGP peer. Related FRR issue: https://github.com/FRRouting/frr/issues/16474 (a new report is being filed).
 
 ## Run it
 
