@@ -1,0 +1,4 @@
+# minimal topology for reproducing ROV revalidation behaviour: border r2, RR r1
+NODE 1
+NODE 2
+LINK 1 2
