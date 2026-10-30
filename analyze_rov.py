@@ -11,6 +11,11 @@ themselves within the AUTO_S window, and then, after an operator soft-in at
 every border, per router the seconds until its decisions first match the
 current list (null if they never do).
 
+bgpfirst runs: the routes were accepted before the cache started, so the
+planted wrong accepts are the routes Invalid under the current list; sync_s is
+the seconds from the cache start until every border holds the list. The
+AUTO_S window and the soft-in are summarized as for freeze.
+
 cut runs: per border, seconds from the cut until the RTR session is reported
 down and until the router holds no VRPs; and the wrong accepts (routes Invalid
 under the current list that are held) over time.
@@ -54,6 +59,15 @@ if "publish_frozen" in ev:
     out["frozen_samples"] = len(fr)
     out["frozen_all_rtr_up"] = sum(all(s["routers"][str(b)].get("rtr_up") for b in plan["borders"]) for s in fr)
     out["frozen_errors_last"] = {n: errors(r) for n, r in fr[-1]["routers"].items()} if fr else None
+
+if "cache_start" in ev:
+    # bgpfirst: every route was accepted as NotFound before the cache started, so each
+    # route that is Invalid under the current list starts as a wrong accept
+    out["planted_wrong_accept"] = len(inv_new)
+    out["planted_wrong_drop"] = 0
+    out["sync_s"] = round(ev["rtr_synced"] - ev["cache_start"], 1) if "rtr_synced" in ev else None
+
+if "publish_frozen" in ev or "cache_start" in ev:
     auto = [s for s in S if s["phase"] == "auto"]
     out["auto_samples"] = len(auto)
     out["auto_recovered"] = "recovered_auto" in ev
@@ -69,8 +83,9 @@ if "publish_frozen" in ev:
     out["recover_errors_last"] = {n: errors(r) for n, r in rec[-1]["routers"].items()} if rec else None
     out["recovered_all"] = "recovered" in ev
     # per route class, at the first border, how many routes are still decided
-    # as the stale list would decide them at the end of the recovery window
-    if rec:
+    # as the stale list would decide them at the end of the recovery window (freeze only:
+    # bgpfirst has no stale list)
+    if rec and "publish_frozen" in ev:
         held = set(rec[-1]["routers"][str(plan["borders"][0])]["held"])
         by = {}
         for r in plan["routes"]:

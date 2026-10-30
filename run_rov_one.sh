@@ -13,6 +13,11 @@
 # mode cut: the cache serves the current list. Once converged, RTR traffic to
 #   the cache is dropped (an unreachable relying party) and we sample for CUT_S
 #   seconds, past the 600 s Expire Interval.
+# mode bgpfirst: no cache at the start, as when BGP converges before the RTR
+#   session comes up. Routes are injected and every router accepts all of them
+#   (NotFound, no VRPs). Then the cache starts, serving the current list. Once
+#   every border holds it, we watch for AUTO_S seconds and then soft-in, as in
+#   freeze.
 #
 # Writes <outdir>/samples.jsonl (sample.py lines), events.jsonl, plan files.
 set -u
@@ -30,41 +35,31 @@ else cp "$OUT/vrp-new.json" /tmp/cache/vrp.json; SERVED=new; fi
 
 bash "$SRC/rov_lab.sh" "$OUT" "$SOFT" > "$OUT/lab.log" 2>&1
 # RTR cache: reread the file every 5 s; End of Data timers as configured on the routers
-stayrtr -bind 172.20.20.1:8282 -cache /tmp/cache/vrp.json -refresh 5 -checktime=false \
-        -rtr.refresh 30 -rtr.retry 30 -rtr.expire 600 > "$OUT/stayrtr.log" 2>&1 &
+start_cache() {
+  stayrtr -bind 172.20.20.1:8282 -cache /tmp/cache/vrp.json -refresh 5 -checktime=false \
+          -rtr.refresh 30 -rtr.retry 30 -rtr.expire 600 > "$OUT/stayrtr.log" 2>&1 &
+}
+[ "$MODE" = bgpfirst ] || start_cache
 ev start
 
 # converged = every border's RTR up with the served list, every router matches
 converged() {
   python3 "$SRC/check.py" "$OUT" "$1" "$(tail -n 1 "$OUT/samples.jsonl")" ${2:-}
 }
-# Routes are injected only after every border holds the served list. FRR 8.4.4
-# does not rerun inbound policy when VRPs arrive after the routes (seen in the
-# shakedown), so routes that arrive first would be judged NotFound and kept.
-ok=0
-for i in $(seq 1 60); do
-  samp rtr_sync
-  converged "$SERVED" rtr_only && { ok=1; break; }
-  sleep "$SAMPLE_GAP"
-done
-[ "$ok" = 1 ] && ev "rtr_synced" || { ev "rtr_not_synced"; exit 4; }
-env exabgp.daemon.user=root exabgp.tcp.bind='' exabgp.api.cli=false \
-    ip netns exec nsx exabgp "$OUT/exabgp.conf" > "$OUT/exabgp.log" 2>&1 &
-ev inject
-ok=0
-for i in $(seq 1 120); do
-  samp warmup
-  converged "$SERVED" && { ok=1; break; }
-  sleep "$SAMPLE_GAP"
-done
-[ "$ok" = 1 ] && ev "ready" || { ev "not_ready"; exit 4; }
-
-if [ "$MODE" = freeze ]; then
-  ev publish_frozen                  # current list exists; the cache does not take it
-  end=$(( $(date +%s) + FREEZE_S ))
-  while [ "$(date +%s)" -lt "$end" ]; do samp frozen; sleep "$SAMPLE_GAP"; done
-  cp "$OUT/vrp-new.json" /tmp/cache/vrp.json.tmp && mv /tmp/cache/vrp.json.tmp /tmp/cache/vrp.json
-  ev unfreeze
+# Wait until every border holds the served list ($1 is the sample phase).
+rtr_wait() {
+  local ok=0
+  for i in $(seq 1 60); do
+    samp "$1"
+    converged "$SERVED" rtr_only && { ok=1; break; }
+    sleep "$SAMPLE_GAP"
+  done
+  [ "$ok" = 1 ] && ev "rtr_synced" || { ev "rtr_not_synced"; exit 4; }
+}
+# Watch for AUTO_S seconds whether the routers match the current list on their own.
+# If not, run "clear bgp ... soft in" on every border and sample every second until
+# they match or RECOVER_S passes.
+auto_then_softin() {
   end=$(( $(date +%s) + AUTO_S ))
   auto=0
   while [ "$(date +%s)" -lt "$end" ]; do
@@ -87,6 +82,37 @@ if [ "$MODE" = freeze ]; then
       sleep 1
     done
   fi
+}
+
+# freeze and cut: routes are injected only after every border holds the served
+# list. FRR 8.4.4 does not rerun inbound policy when VRPs arrive after the routes
+# (seen in the shakedown), so routes that arrive first would be judged NotFound
+# and kept. bgpfirst measures exactly that, so its routes go in with no cache.
+[ "$MODE" = bgpfirst ] || rtr_wait rtr_sync
+env exabgp.daemon.user=root exabgp.tcp.bind='' exabgp.api.cli=false \
+    ip netns exec nsx exabgp "$OUT/exabgp.conf" > "$OUT/exabgp.log" 2>&1 &
+ev inject
+WARM=$SERVED; [ "$MODE" = bgpfirst ] && WARM=none
+ok=0
+for i in $(seq 1 120); do
+  samp warmup
+  converged "$WARM" && { ok=1; break; }
+  sleep "$SAMPLE_GAP"
+done
+[ "$ok" = 1 ] && ev "ready" || { ev "not_ready"; exit 4; }
+
+if [ "$MODE" = freeze ]; then
+  ev publish_frozen                  # current list exists; the cache does not take it
+  end=$(( $(date +%s) + FREEZE_S ))
+  while [ "$(date +%s)" -lt "$end" ]; do samp frozen; sleep "$SAMPLE_GAP"; done
+  cp "$OUT/vrp-new.json" /tmp/cache/vrp.json.tmp && mv /tmp/cache/vrp.json.tmp /tmp/cache/vrp.json
+  ev unfreeze
+  auto_then_softin
+elif [ "$MODE" = bgpfirst ]; then
+  start_cache
+  ev cache_start                     # t = 0 in the timeline
+  rtr_wait sync
+  auto_then_softin
 else
   iptables -I INPUT -p tcp --dport 8282 -j DROP
   iptables -I OUTPUT -p tcp --sport 8282 -j DROP
