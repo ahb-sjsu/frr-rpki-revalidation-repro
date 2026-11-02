@@ -5,6 +5,7 @@
 # prints the border router's wrong decisions over time.
 #
 #   ./repro.sh [frr10|frr8|both] [freeze|bgpfirst]   (default both freeze; needs Docker, runs privileged)
+#   FRR_REF=<commit> [FRR_REPO=<git url>] ./repro.sh src [freeze|bgpfirst]   (FRR built from source)
 #
 # freeze: the RPKI cache serves list A; routes are injected and filtered
 # correctly; at t=0 the cache switches to list B; for AUTO_S seconds (default
@@ -23,8 +24,8 @@ OUT="$PWD/out"
 mkdir -p "$OUT"
 
 run() {  # image tag, dockerfile
-  local tag=$1 df=$2
-  docker build -q -t "$tag" -f "$df" . >/dev/null
+  local tag=$1 df=$2; shift 2
+  docker build -q ${DOCKER_BUILD_OPTS:-} "$@" -t "$tag" -f "$df" . >/dev/null
   local o="$OUT/$tag-$MODE-$(date +%Y%m%dT%H%M%S)"
   mkdir -p "$o"
   echo "=== $tag ($MODE): $(docker run --rm --entrypoint /usr/lib/frr/bgpd "$tag" --version | head -1)"
@@ -41,4 +42,7 @@ case "$WHICH" in
   frr8)  run frr8-rpki-repro Dockerfile ;;
   frr10) run frr10-rpki-repro Dockerfile.frr10 ;;
   both)  run frr8-rpki-repro Dockerfile; run frr10-rpki-repro Dockerfile.frr10 ;;
+  src)   : "${FRR_REF:?set FRR_REF to the commit to build}"
+         run "frrsrc-${FRR_REF:0:12}-rpki-repro" Dockerfile.src --build-arg FRR_REF="$FRR_REF" \
+           --build-arg FRR_REPO="${FRR_REPO:-https://github.com/FRRouting/frr}" ;;
 esac

@@ -72,6 +72,38 @@ the whole `AUTO_S` window and leave only at the soft-in. The route reflector
 held all 48 too, so they were advertised over iBGP. Here t counts from the
 cache start, and the window starts once the border holds the list.
 
+## Testing a fix (`src`)
+
+`FRR_REF=<commit> [FRR_REPO=<git url>] ./repro.sh src [freeze|bgpfirst]` builds
+FRR from source at that commit (`Dockerfile.src`) and runs the same lab. On
+2026-11-02 we ran it on the fix proposed in FRR pull request #24131 (head
+b549888a8ec2, from github.com/danielgines/frr) and on its base, master
+5040a07be5bd, built the same way:
+
+```
+=== frrsrc-5040a07be5bd-rpki-repro (freeze): bgpd version 10.9.0-dev
+t=  -10.2  wrong_accept= 36  wrong_drop= 48  vrps=72  rtr_up=True
+t=    5.2  wrong_accept= 36  wrong_drop= 48  vrps=144  rtr_up=True
+t=  300.0  wrong_accept=  0  wrong_drop=  0  vrps=144  rtr_up=True    <- after "soft in"
+
+=== frrsrc-b549888a8ec2-rpki-repro (freeze): bgpd version 10.9.0-dev
+t=  -10.2  wrong_accept= 36  wrong_drop= 48  vrps=72  rtr_up=True
+t=    5.2  wrong_accept=  0  wrong_drop=  0  vrps=144  rtr_up=True    <- no soft in
+
+=== frrsrc-5040a07be5bd-rpki-repro (bgpfirst): bgpd version 10.9.0-dev
+t=    0.1  wrong_accept= 48  wrong_drop=  0  vrps=0  rtr_up=False
+t=   20.7  wrong_accept= 48  wrong_drop=  0  vrps=144  rtr_up=True
+t=  320.8  wrong_accept=  0  wrong_drop=  0  vrps=144  rtr_up=True    <- after "soft in"
+
+=== frrsrc-b549888a8ec2-rpki-repro (bgpfirst): bgpd version 10.9.0-dev
+t=    0.0  wrong_accept= 48  wrong_drop=  0  vrps=0  rtr_up=False
+t=   20.7  wrong_accept=  0  wrong_drop=  0  vrps=144  rtr_up=True    <- no soft in
+```
+
+With the fix, both routers (the border and the route reflector) matched list B
+at the first sample after the border held it, in both modes, and no soft-in was
+run. Without it, the base behaves as the released versions above.
+
 ## What runs
 
 | file | role |
@@ -82,7 +114,7 @@ cache start, and the window starts once the border holds the list.
 | `run_rov_one.sh` | starts StayRTR and ExaBGP, waits for convergence on list A, switches the cache to list B, waits `AUTO_S`, runs `soft in` on the border, samples throughout. In `bgpfirst` mode it injects the routes first and starts StayRTR, serving list B, once they are accepted |
 | `sample.py`, `check.py` | snapshot every router's best paths, FIB and RTR state; test convergence |
 | `analyze_rov.py`, `timeline.py` | summarize a run |
-| `Dockerfile`, `Dockerfile.frr10` | FRR 8.4.4 from Ubuntu; FRR 10.x from frr-stable |
+| `Dockerfile`, `Dockerfile.frr10`, `Dockerfile.src` | FRR 8.4.4 from Ubuntu; FRR 10.x from frr-stable; FRR built from source at `FRR_REF` |
 
 Expected decisions come from the small RFC 6811 validator in `gen_rov.py`, not
 from FRR. The harness was built for a larger study of RPKI staleness on

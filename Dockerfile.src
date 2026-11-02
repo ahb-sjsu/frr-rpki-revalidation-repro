@@ -1,0 +1,35 @@
+# Same lab image with FRR built from source at a given commit, to test a fix
+# (for example a pull request's head) against the same build of its base.
+#   docker build --build-arg FRR_REPO=https://github.com/FRRouting/frr \
+#                --build-arg FRR_REF=<commit> -f Dockerfile.src .
+# libyang comes from the FRR project's apt repository (Ubuntu 24.04's is older
+# than the 2.1.128 FRR's configure asks for), librtr 0.8.0 from Ubuntu.
+# StayRTR and ExaBGP from Ubuntu as before.
+FROM ubuntu:24.04
+ARG FRR_REPO=https://github.com/FRRouting/frr
+ARG FRR_REF
+ARG JOBS=8
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && curl -fsSL https://deb.frrouting.org/frr/keys.gpg -o /usr/share/keyrings/frrouting.gpg \
+ && echo "deb [signed-by=/usr/share/keyrings/frrouting.gpg] https://deb.frrouting.org/frr noble frr-stable" \
+      > /etc/apt/sources.list.d/frr.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends git autoconf automake libtool make \
+      gcc g++ pkg-config bison flex texinfo libreadline-dev libjson-c-dev libc-ares-dev libcap-dev \
+      libelf-dev libunwind-dev libpcre2-dev libprotobuf-c-dev protobuf-c-compiler python3-dev \
+      libyang-dev librtr-dev \
+      stayrtr exabgp iproute2 iptables python3 procps \
+ && rm -rf /var/lib/apt/lists/*
+RUN test -n "$FRR_REF" \
+ && groupadd -r frr && groupadd -r frrvty && useradd -r -g frr -G frrvty -d /var/run/frr -s /bin/false frr \
+ && git clone -q --filter=blob:none "$FRR_REPO" /src/frr \
+ && cd /src/frr && git checkout -q "$FRR_REF" \
+ && ./bootstrap.sh >/dev/null \
+ && ./configure -q --prefix=/usr --sysconfdir=/etc --localstatedir=/var --sbindir=/usr/lib/frr \
+      --enable-rpki --enable-user=frr --enable-group=frr --enable-vty-group=frrvty \
+      --disable-doc --disable-snmp --disable-scripting \
+ && make -s -j"$JOBS" && make -s install && ldconfig \
+ && mkdir -p /etc/frr /var/run/frr /var/log/frr && chown -R frr:frr /etc/frr /var/run/frr /var/log/frr \
+ && git -C /src/frr rev-parse HEAD > /etc/frr/BUILT_FROM \
+ && rm -rf /src/frr
